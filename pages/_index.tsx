@@ -1,0 +1,99 @@
+import React,{useEffect,useMemo,useState}from"react";
+import { buildStatementPdf } from "../helpers/buildStatementPdf";
+import { formatStatementAmount as money } from "../helpers/formatStatementAmount";
+import { Button } from "../components/Button";
+import { encodePdf, serializeBackup, parseBackup } from "../helpers/statementBackup";
+import { Input } from "../components/Input";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/Select";
+import { Slider } from "../components/Slider";
+import{Document,Page,pdfjs}from"react-pdf";
+pdfjs.GlobalWorkerOptions.workerSrc=`https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+type Tx={id:number,date:string,valueDate:string,label:string,type:"credit"|"debit",amount:number,auto?:boolean};
+type Guides={date:number,valueDate:number,label:number,debit:number,credit:number,balance:number,startY:number,endY:number,lineHeight:number};
+const defaults:Guides={date:8,valueDate:22,label:37,debit:68,credit:79,balance:91,startY:28,endY:88,lineHeight:3.8};
+const iso=(d:Date)=>d.toISOString().slice(0,10); const plus=(s:string,n:number)=>{const d=new Date(s+"T12:00:00");d.setMonth(d.getMonth()+n);return iso(d)};
+export default function App(){const [backupMessage,setBackupMessage]=useState(""),[importing,setImporting]=useState(false);const [sessionKey,setSessionKey]=useState(0),[exportNotice,setExportNotice]=useState("");const [fontSize,setFontSize]=useState(8);const [livePdfUrl,setLivePdfUrl]=useState(""),[previewError,setPreviewError]=useState(""),[previewBusy,setPreviewBusy]=useState(false);const [pdfError,setPdfError]=useState(""),[exporting,setExporting]=useState(false);const today=iso(new Date());const [opening,setOpening]=useState(0),[startDate,setStartDate]=useState(today),[endDate,setEndDate]=useState(today);const[rows,setRows]=useState<Tx[]>([]),[baseGuides,setBaseGuides]=useState<Guides>(defaults),[pageGuides,setPageGuides]=useState<Record<number,Guides>>({});const[pdfBytes,setPdfBytes]=useState<ArrayBuffer|null>(null),[pdfName,setPdfName]=useState(""),[pdfUrl,setPdfUrl]=useState(""),[sourcePages,setSourcePages]=useState(1),[pdfPages,setPdfPages]=useState(0),[pdfPage,setPdfPage]=useState(1);const[label,setLabel]=useState(""),[amount,setAmount]=useState(0),[type,setType]=useState<"credit"|"debit">("credit"),[date,setDate]=useState(today),[valueDate,setValueDate]=useState(today);
+// No statement data is persisted. Remove the previous version's local backup.
+useEffect(()=>{try{localStorage.removeItem("gestion-rb");}catch{}},[]);
+function resetStatement(){
+  const freshToday=iso(new Date());
+  setRows([]);setOpening(0);setStartDate(freshToday);setEndDate(freshToday);
+  setLabel("");setAmount(0);setType("credit");setDate(freshToday);setValueDate(freshToday);
+  setBaseGuides(defaults);setPageGuides({});setFontSize(8);
+  if(pdfUrl)URL.revokeObjectURL(pdfUrl);
+  setPdfBytes(null);setPdfUrl("");setPdfName("");setLivePdfUrl("");
+  setPdfPages(0);setSourcePages(1);setPdfPage(1);setPreviewError("");setPreviewBusy(false);
+  setSessionKey(k=>k+1);
+  try{localStorage.removeItem("gestion-rb");}catch{}
+}
+const guides=pageGuides[pdfPage]||baseGuides;
+const all=useMemo(()=>{let c=[...rows];let ps=startDate,base=opening,k=1;while(ps&&endDate&&plus(ps,6)<=endDate){const due=plus(ps,6),intr=base*.012,tax=intr*.05;c.push({id:-k*2,date:due,valueDate:due,label:"Intérêts créditeurs semestriels",type:"credit",amount:intr,auto:true},{id:-k*2-1,date:due,valueDate:due,label:"Taxe sur intérêts (5 %)",type:"debit",amount:tax,auto:true});const prior=c.filter(x=>x.date<=due).sort((a,b)=>a.date.localeCompare(b.date));let b=opening;for(const x of prior)b+=x.type==="credit"?x.amount:-x.amount;base=b;ps=due;k++}c.sort((a,b)=>a.date.localeCompare(b.date)||Number(!!a.auto)-Number(!!b.auto));let b=opening;return c.map(x=>{b+=x.type==="credit"?x.amount:-x.amount;return{...x,balance:b}})},[rows,opening,startDate,endDate]);
+// Use the export pipeline itself so the preview has identical typography and pagination.
+useEffect(()=>{
+  let cancelled=false, objectUrl="";
+  setLivePdfUrl("");setPreviewError("");
+  if(!pdfBytes||!all.length){setPreviewBusy(false);return;}
+  setPreviewBusy(true);
+  const timer=setTimeout(async()=>{
+    try{
+      const output=await buildStatementPdf(pdfBytes,all,baseGuides,pageGuides,fontSize);
+      if(cancelled)return;
+      objectUrl=URL.createObjectURL(new Blob([output as BlobPart],{type:"application/pdf"}));
+      setLivePdfUrl(objectUrl);
+    }catch(error){
+      if(!cancelled)setPreviewError(error instanceof Error?error.message:"Impossible de préparer l’aperçu.");
+    }finally{if(!cancelled)setPreviewBusy(false);}
+  },300);
+  return()=>{cancelled=true;clearTimeout(timer);if(objectUrl)URL.revokeObjectURL(objectUrl);};
+},[pdfBytes,all,baseGuides,pageGuides,fontSize]);
+const add=()=>{if(label.trim()&&amount>0)setRows(r=>[...r,{id:Math.max(Date.now(),...r.map(x=>x.id+1)),date,valueDate,label:label.trim(),type,amount}]),setLabel(""),setAmount(0)};const update=(id:number,key:"date"|"valueDate"|"label"|"type"|"amount",v:string|number)=>setRows(r=>r.map(x=>x.id===id?{...x,[key]:v}:x));const g=(k:keyof Guides,v:number)=>{setPdfError("");setPageGuides(x=>({...x,[pdfPage]:{...(x[pdfPage]||baseGuides),[k]:v}}));};
+async function loadPdf(f?:File){if(!f)return;if(pdfUrl)URL.revokeObjectURL(pdfUrl);setPdfBytes(await f.arrayBuffer());setPdfUrl(URL.createObjectURL(f));setPdfName(f.name);setPdfPage(1)}
+function exportBackup(){
+  setBackupMessage("");
+  try{
+    const content=serializeBackup({format:"gestion-rb",version:1,opening,startDate,endDate,rows,baseGuides,pageGuides,fontSize,pdf:pdfBytes?{name:pdfName,base64:encodePdf(pdfBytes)}:null});
+    const url=URL.createObjectURL(new Blob([content],{type:"application/json"}));
+    const a=document.createElement("a");a.href=url;a.download="releve-"+iso(new Date())+".gestion-rb.json";
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+    setBackupMessage("Téléchargement de la sauvegarde lancé. Conserve ce fichier pour reprendre les corrections. Le formulaire reste disponible.");
+  }catch{setBackupMessage("Sauvegarde impossible : vérifie les dates, montants, libellés et repères. Le PDF de fond doit faire moins de 30 Mo.");}
+}
+async function importBackup(file?:File){
+  if(!file)return;
+  setImporting(true);setBackupMessage("");
+  try{
+    if(file.size>45000000)throw new Error("Sauvegarde trop volumineuse (45 Mo maximum).");
+    const restored=await parseBackup(await file.text());
+    if((rows.length||pdfBytes||opening||label)&&!window.confirm("Remplacer le relevé en cours par cette sauvegarde ?"))return;
+    const {data,pdfBytes:bytes}=restored;
+    const url=bytes?URL.createObjectURL(new Blob([bytes],{type:"application/pdf"})):"";
+    resetStatement();
+    setOpening(data.opening);setStartDate(data.startDate);setEndDate(data.endDate);
+    setRows(data.rows);setBaseGuides(data.baseGuides);setPageGuides(data.pageGuides);setFontSize(data.fontSize);
+    setPdfBytes(bytes);setPdfUrl(url);setPdfName(data.pdf?.name||"");
+    setPdfError("");setExportNotice("");
+    setBackupMessage("Sauvegarde restaurée. Modifie les lignes dans le tableau, puis télécharge une nouvelle sauvegarde avant l’export PDF.");
+  }catch(error){setBackupMessage(error instanceof Error?error.message:"Import impossible. Le relevé en cours est conservé.");}
+  finally{setImporting(false);}
+}
+async function exportPdf(){
+  setPdfError("");setExportNotice("");
+  if(!pdfBytes){setPdfError("Ajoute d’abord le PDF de fond.");return;}
+  setExporting(true);
+  try{
+    const out=await buildStatementPdf(pdfBytes,all,baseGuides,pageGuides,fontSize);
+    const url=URL.createObjectURL(new Blob([out as BlobPart],{type:"application/pdf"}));
+    const a=document.createElement("a");a.href=url;a.download="releve-simule.pdf";
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    resetStatement();
+    setExportNotice("PDF généré et téléchargement lancé. Le formulaire a été vidé. Vérifie le fichier dans tes téléchargements : le navigateur ne confirme pas son enregistrement.");
+  }catch(error){setPdfError(error instanceof Error?error.message:"L’export PDF a échoué. Réessaie avec un PDF valide.");}
+  finally{setExporting(false);}
+}
+const keys:[keyof Guides,string][]=[["date","Date transaction"],["valueDate","Date valeur"],["label","Libellé"],["debit","Débit"],["credit","Crédit"],["balance","Solde"]];
+return <main style={{fontFamily:"Arial,sans-serif",maxWidth:1250,margin:"auto",padding:20,color:"#18212b"}}><header><b style={{color:"#9f2525",fontSize:12}}>SIMULATEUR — DOCUMENT NON OFFICIEL</b><h1>Gestion RB</h1><p>Relevé simulé, calage PDF et export multi-pages.</p></header>
+<fieldset disabled={exporting||importing} style={{border:0,padding:0,margin:0,minWidth:0}}><section style={box}><h2>Sauvegarder ou reprendre un relevé</h2><p>Télécharge la sauvegarde avant l’export PDF, qui vide le formulaire. Elle contient les opérations, les réglages et le PDF de fond chargé. Aucun envoi au serveur.</p><Button onClick={exportBackup}>Télécharger la sauvegarde</Button><label style={{display:"block",marginTop:12}}>Réimporter une sauvegarde<Input key={"backup-"+sessionKey} type="file" accept=".json,application/json" onChange={e=>{const file=e.target.files?.[0];e.target.value="";void importBackup(file);}}/></label>{importing&&<p role="status">Vérification de la sauvegarde…</p>}{backupMessage&&<p role="status">{backupMessage}</p>}</section><section style={box}><h2>1. Relevé</h2><div style={grid}><label>Solde d’ouverture<input type="number" value={opening||""} onChange={e=>setOpening(+e.target.value)}/></label><label>Début<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)}/></label><label>Fin<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label></div><h3>Ajouter une opération manuelle</h3><div style={grid}><input type="date" value={date} onChange={e=>setDate(e.target.value)}/><input type="date" value={valueDate} onChange={e=>setValueDate(e.target.value)}/><input placeholder="Libellé" value={label} onChange={e=>setLabel(e.target.value)}/><select value={type} onChange={e=>setType(e.target.value as any)}><option value="credit">Crédit</option><option value="debit">Débit</option></select><input type="number" placeholder="Montant" value={amount||""} onChange={e=>setAmount(+e.target.value)}/><button onClick={add}>Ajouter</button></div></section>
+<section style={box}><h2>2. PDF de fond et repères</h2><input key={sessionKey} type="file" accept="application/pdf" onChange={e=>loadPdf(e.target.files?.[0])}/><p>{pdfName||"Aucun PDF chargé pour cette session."}</p><p style={{fontSize:13}}>Textes ajoutés : Tw Cen MT Regular. Le PDF de fond conserve son apparence d’origine.</p><div style={{maxWidth:420,margin:"18px 0"}}><label id="statement-font-size">Taille du texte — toutes les pages : {fontSize} pt</label><Slider aria-labelledby="statement-font-size" min={4} max={24} step={0.5} value={[fontSize]} onValueChange={([v])=>{setPdfError("");setFontSize(v);}}/><p style={{fontSize:13}}>Même taille pour les dates, libellés et montants ajoutés, sur toutes les pages. Le texte du PDF de fond reste inchangé.</p><Button variant="ghost" size="sm" onClick={()=>{setPdfError("");setFontSize(8);}}>Rétablir 8 pt</Button></div><h3>Repères de la page {pdfPage}</h3><p>Ces réglages concernent uniquement cette page. Sélectionne une autre page avec les boutons sous les réglages. Les pages non réglées utilisent les valeurs initiales.</p><div style={grid}>{keys.map(([k,l])=><div key={k}><label id={`guide-${k}`}>{l} — {guides[k]}%</label><Slider aria-labelledby={`guide-${k}`} min={0} max={99} step={.2} value={[Math.min(99,Math.max(0,guides[k]))]} onValueChange={([v])=>g(k,v)}/>{(!Number.isFinite(guides[k])||guides[k]<0||guides[k]>=100)&&<p role="alert" style={{color:"#9f2525"}}>Le repère « {l} » est hors de la page. Déplace-le vers la gauche ou rétablis sa position initiale.</p>}<Button variant="ghost" size="sm" onClick={()=>g(k,defaults[k])}>Rétablir {defaults[k]} %</Button></div>)}</div><div style={grid}><label>Début lignes — {guides.startY}%<input type="range" min="0" max="95" step=".2" value={guides.startY} onChange={e=>g("startY",+e.target.value)}/></label><label>Fin lignes — {guides.endY}%<input type="range" min="5" max="100" step=".2" value={guides.endY} onChange={e=>g("endY",+e.target.value)}/></label><label>Espacement — {guides.lineHeight}%<input type="range" min="1" max="10" step=".1" value={guides.lineHeight} onChange={e=>g("lineHeight",+e.target.value)}/></label></div>{previewBusy&&<p role="status">Actualisation des opérations sur le relevé…</p>}{previewError&&<p role="alert" style={{color:"#9f2525"}}>Aperçu des opérations indisponible : {previewError} Seul le PDF de fond est affiché.</p>}{pdfUrl?<><p>{livePdfUrl?"Aperçu du relevé avec les opérations — repères visibles uniquement à l’écran.":all.length?"PDF de fond — les opérations apparaîtront après validation des réglages.":"Ajoute une opération pour la voir sur le relevé."}</p><div style={{display:"flex",gap:10,alignItems:"center",marginTop:14}}><button disabled={pdfPage<=1} onClick={()=>setPdfPage(p=>p-1)}>← Page précédente</button><b>Page {pdfPage} / {pdfPages||"…"}</b><button disabled={!pdfPages||pdfPage>=pdfPages} onClick={()=>setPdfPage(p=>p+1)}>Page suivante →</button></div><div style={{position:"relative",margin:"15px auto",width:"fit-content",maxWidth:"100%",overflow:"visible",border:"1px solid #aeb8c3",background:"white"}}><Document file={livePdfUrl||pdfUrl} onLoadSuccess={({numPages})=>{if(!livePdfUrl)setSourcePages(numPages);if(livePdfUrl||!all.length){setPdfPages(numPages);setPdfPage(p=>Math.min(p,numPages));}}}><Page pageNumber={livePdfUrl?pdfPage:Math.min(pdfPage,sourcePages)} width={Math.min(760,typeof window!=="undefined"?window.innerWidth-70:760)} renderTextLayer={false} renderAnnotationLayer={false}/></Document><div style={{position:"absolute",left:0,top:0,width:"100%",height:"100%",pointerEvents:"none"}}>{keys.map(([k,l])=><div key={k} style={{position:"absolute",left:guides[k]+"%",top:0,bottom:0,borderLeft:"2px dashed #b32020",fontSize:10,color:"#8d1717"}}>{l}</div>)}<div style={{position:"absolute",top:guides.startY+"%",left:0,right:0,borderTop:"2px solid #16805b"}}>Début</div><div style={{position:"absolute",top:guides.endY+"%",left:0,right:0,borderTop:"2px solid #b32020"}}>Fin</div></div></div></>:<div style={{height:220,display:"grid",placeItems:"center",border:"1px dashed #aeb8c3",marginTop:15}}>Importe un PDF pour afficher le document sous les repères.</div>}</section>
+<section style={box}><h2>3. Transactions</h2><p>Les lignes manuelles sont modifiables. Les intérêts et taxes sont recalculés automatiquement à partir des données du relevé.</p><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr>{["Date transaction","Date valeur","Libellé","Crédit","Débit","Solde","Modifier"].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{all.map(x=><tr key={x.id}><td>{x.auto?x.date:<input type="date" value={x.date} onChange={e=>update(x.id,"date",e.target.value)}/>}</td><td>{x.auto?x.valueDate:<input type="date" value={x.valueDate} onChange={e=>update(x.id,"valueDate",e.target.value)}/>}</td><td>{x.auto?x.label+" · auto":<Input aria-label="Libellé de la transaction" value={x.label} onChange={e=>update(x.id,"label",e.target.value)}/>}</td><td>{x.type==="credit"?money(x.amount):""}</td><td>{x.type==="debit"?money(x.amount):""}</td><td>{money(x.balance)}</td><td>{x.auto?<small>Calcul automatique</small>:<div style={{minWidth:170}}><Input aria-label="Montant de la transaction" type="number" min={0} step="any" value={x.amount} onChange={e=>update(x.id,"amount",e.target.valueAsNumber)}/><Select value={x.type} onValueChange={v=>update(x.id,"type",v)}><SelectTrigger aria-label="Type de transaction"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="credit">Crédit</SelectItem><SelectItem value="debit">Débit</SelectItem></SelectContent></Select><Button variant="ghost" size="sm" onClick={()=>setRows(r=>r.filter(t=>t.id!==x.id))}>Supprimer</Button></div>}</td></tr>)}</tbody></table></div>{pdfError&&<p role="alert" style={{color:"#9f2525"}}>{pdfError}</p>}<Button onClick={exportPdf} disabled={exporting} style={{marginTop:16}}>{exporting?"Export en cours…":"Exporter le PDF final"}</Button></section></fieldset>{exportNotice&&<p role="status">{exportNotice}</p>}<p style={{fontSize:12,color:"#687482"}}>Aucune sauvegarde automatique dans le navigateur. Conserve le fichier de sauvegarde téléchargé pour reprendre ce relevé. Un rafraîchissement efface la saisie en cours. Après génération du PDF et lancement du téléchargement, les opérations, le PDF de fond et les réglages sont effacés du formulaire. En cas d’erreur d’export, la saisie est conservée pour réessayer.</p></main>}
+const box:React.CSSProperties={border:"1px solid #d7dde5",borderRadius:12,padding:16,margin:"16px 0",background:"#f8fafb"};const grid:React.CSSProperties={display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:12};
