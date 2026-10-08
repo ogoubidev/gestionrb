@@ -16,6 +16,7 @@ public class MainActivity extends Activity {
  @Override public void onCreate(Bundle state) {
   super.onCreate(state);
   web=new WebView(this); setContentView(web);
+  web.setOnApplyWindowInsetsListener((v,insets)->{v.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;});
   web.getSettings().setJavaScriptEnabled(true);
   web.getSettings().setDomStorageEnabled(true);
   web.getSettings().setAllowFileAccess(false);
