@@ -1,4 +1,6 @@
 import { PDFDocument, rgb } from "pdf-lib";
+import {applyBackgroundPatches} from "./applyBackgroundPatches";
+import type {BackgroundPatch} from "./backgroundHistory";
 import fontkit from "@pdf-lib/fontkit";
 import { statementFont } from "./statementFont";
 import { formatStatementAmount } from "./formatStatementAmount";
@@ -7,7 +9,7 @@ type Guides = { date:number; valueDate:number; label:number; debit:number; credi
 type Row = { date:string; valueDate:string; label:string; type:"credit"|"debit"; amount:number; balance:number };
 
 // Pure export pipeline: no browser state, so actual PDF generation can be tested.
-export async function buildStatementPdf(bytes:ArrayBuffer, rows:Row[], defaultGuides:Guides, pageGuides:Record<number,Guides> = {}, fontSize:number = 8) {
+export async function buildStatementPdf(bytes:ArrayBuffer, rows:Row[], defaultGuides:Guides, pageGuides:Record<number,Guides> = {}, fontSize:number = 8, decoration?:{opening:number;closingDate:string;summaryFontSize:number;footerLabel:string;summaryX?:number;summaryY?:number;footerX?:number;footerY?:number}, patches:BackgroundPatch[] = []) {
   if (!rows.length) throw new Error("Ajoute au moins une opération avant l’export.");
   if(!Number.isFinite(fontSize)||fontSize<4||fontSize>24) throw new Error("Taille du texte invalide : choisis entre 4 et 24 points.");
   const validate=(guides:Guides)=>{
@@ -58,7 +60,8 @@ export async function buildStatementPdf(bytes:ArrayBuffer, rows:Row[], defaultGu
     layout.push({guides,offset,count});
     offset+=count;
   }
-  // Copy pristine backgrounds before drawing transactions.
+  await applyBackgroundPatches(doc,patches);
+  // Copy retouched backgrounds before drawing transactions.
   while(doc.getPageCount()<layout.length) {
     const [copy]=await doc.copyPages(doc,[0]);
     doc.addPage(copy);
@@ -79,6 +82,45 @@ export async function buildStatementPdf(bytes:ArrayBuffer, rows:Row[], defaultGu
       draw(row.label,guides.label);
       draw(row.amountText,row.type==="debit"?guides.debit:guides.credit);
       draw(row.balanceText,guides.balance);
+    }
+  }
+  if(decoration){
+    const {opening,closingDate,summaryFontSize,footerLabel,summaryX=0,summaryY=0,footerX=0,footerY=0}=decoration;
+    if([summaryX,summaryY,footerX,footerY].some(v=>!Number.isFinite(v))||Math.abs(summaryX)>8||Math.abs(footerX)>8||summaryY < -10||summaryY>70||footerY < -1||footerY>90)throw new Error("Position du bloc invalide.");
+    if(!Number.isFinite(opening)||!Number.isFinite(summaryFontSize)||summaryFontSize<7||summaryFontSize>14)throw new Error("Taille du récapitulatif invalide : 7 à 14 points.");
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(closingDate)||!footerLabel.trim()||footerLabel.length>60)throw new Error("Date de clôture ou libellé du pied de page invalide.");
+    const credits=rows.reduce((s,r)=>s+(r.type==="credit"?r.amount:0),0),debits=rows.reduce((s,r)=>s+(r.type==="debit"?r.amount:0),0);
+    const summary:[string,number][]=[["Solde d'ouverture",opening],["Total des débits",debits],["Total des crédits",credits],["Solde final",rows[rows.length-1].balance]];
+    for(let p=0;p<doc.getPageCount();p++){
+      const page=doc.getPage(p),{width,height}=page.getSize();
+      const draw=(value:string,x:number,y:number,size:number)=>{
+        const t=text(value);if(x<0||y<0||x+font.widthOfTextAtSize(t,size)>width||y+size>height)throw new Error("Le récapitulatif ou le pied de page dépasse la page.");
+        page.drawText(t,{x,y,size,font,color:rgb(.08,.08,.08)});
+      };
+      const last=layout[p];
+      const rowTop=last?height*(1-last.guides.startY/100)+fontSize:0;
+      const rowBottom=last?height*(1-(last.guides.startY+(last.count-1)*last.guides.lineHeight)/100):0;
+      const overlaps=(bottom:number,top:number)=>!!last&&bottom<rowTop+8&&top>rowBottom-8;
+      if(p===0){
+        const top=height*(.88-summaryY/100),bottom=top-3*(summaryFontSize+6);
+        if(overlaps(bottom,top+summaryFontSize))throw new Error("Le récapitulatif chevauche les opérations. Déplace le bloc ou règle le début des lignes.");
+        summary.forEach(([label,value],i)=>{
+          const y=height*(.88-summaryY/100)-i*(summaryFontSize+6);
+          draw(label,width*(.08+summaryX/100),y,summaryFontSize);
+          const amount=money(value);draw(amount,width*(.9+summaryX/100)-font.widthOfTextAtSize(amount,summaryFontSize),y,summaryFontSize);
+        });
+      }
+      const footerBaseline=30+height*footerY/100;
+      if(p===0){const top=height*(.88-summaryY/100),bottom=top-3*(summaryFontSize+6);if(footerBaseline<top+summaryFontSize+8&&footerBaseline+8>bottom-8)throw new Error("Le pied de page chevauche le récapitulatif. Éloigne les deux blocs.");}
+      if(overlaps(footerBaseline,footerBaseline+8))throw new Error("Le pied de page chevauche les opérations. Déplace le bloc ou règle la fin des lignes.");
+      if(footerBaseline<23)throw new Error("Le pied de page chevauche la mention de document personnel. Remonte le bloc.");
+      const footerText=text(footerLabel.trim()+" · "+closingDate);
+      const pageText=text("Page "+(p+1)+" sur "+doc.getPageCount());
+      if(width*.08+font.widthOfTextAtSize(footerText,8)+10>width*.92-font.widthOfTextAtSize(pageText,8))throw new Error("Le libellé du pied de page chevauche la pagination. Raccourcis le libellé.");
+      draw(footerText,width*(.08+footerX/100),footerBaseline,8);
+      const number="Page "+(p+1)+" sur "+doc.getPageCount();
+      draw(number,width*(.92+footerX/100)-font.widthOfTextAtSize(number,8),footerBaseline,8);
+      draw("DOCUMENT PERSONNEL - NON EMIS PAR LA BANQUE",width*.08,14,7);
     }
   }
   return doc.save();

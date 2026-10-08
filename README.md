@@ -1,12 +1,18 @@
 # Gestion RB
 
-Copie des sources du projet Floot Gestion RB, version 1791023629031, exportée le 3 octobre 2026.
+Copie des sources du projet Floot Gestion RB, version 1791444924109, synchronisée le 8 octobre 2026.
 
 Application : https://gestionrb.floot.app
 
 ## Contenu
 - Sources React/TypeScript, styles, composants et tests tels que présents dans Floot.
 - Générateur PDF, repères distincts par page, taille de texte commune et sauvegarde JSON réimportable.
+- Récapitulatif de première page (ouverture, débits, crédits, solde final), taille 7–14 pt et déplacement horizontal/vertical.
+- Pied de page déplaçable : libellé, date de clôture et pagination Page X sur Y.
+- Outil Retoucher le fond : activation explicite, rectangle cible, sélection source, aperçu Appliquer/Annuler.
+- Annuler/Rétablir les retouches pendant la session ; sauvegarde des retouches appliquées dans le JSON.
+- Retouches visuelles superposées au fond : le contenu PDF sous-jacent n’est pas supprimé.
+- Mention de document personnel non émis par la banque dans les exports.
 - Inventaire des dépendances : `static/__dev/dependencies.json`.
 - Police Tw Cen MT Regular : `assets/fonts/tw-cen-mt-regular.ttf`.
 
@@ -28,5 +34,7 @@ Les exemples et jeux de tests fournis par le projet sont conservés.
 Les opérations et le PDF de fond sont manipulés dans le navigateur. Le fichier JSON téléchargé par l'utilisateur contient sa sauvegarde ; il n'est pas une ressource du dépôt.
 
 ## Portée de la vérification
-Les 183 fichiers texte exportés ont été comparés aux longueurs de l'inventaire Floot. Le binaire de police est identifié TwCenMT-Regular (76252 octets).
+Les 190 fichiers texte de l’inventaire Floot ont été lus intégralement et leurs longueurs vérifiées. La comparaison des empreintes Git avec le dépôt a identifié dix fichiers ajoutés ou modifiés, synchronisés dans ce commit ; les autres sources correspondent à l’export précédent. Le binaire de police existant est conservé.
+Six fichiers de tests Jasmine passent dans Floot : themeMode, statementBackup, buildStatementPdf, statementDecoration, backgroundHistory et backgroundPatches. TypeScript : aucune erreur. Deux fichiers de tests de hooks sont exclus par le lanceur par défaut.
+Les gestes de sélection dans un navigateur réel n’ont pas été vérifiés : aucune fenêtre de prévisualisation Floot n’était ouverte.
 Ce transfert ne modifie ni ne republie l'application Floot. Il ne valide pas un lancement autonome hors Floot.
